@@ -106,11 +106,11 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         try {
             connection = PostgresDBConnectionUtil.getConnection();
             connection.setAutoCommit(false);
-            connection.commit();
             preparedStatement = connection.prepareStatement(getAPIArtefactQuery);
             preparedStatement.setString(1, organization.getName());
             preparedStatement.setString(2, apiUUID);
             resultSet = preparedStatement.executeQuery();
+            connection.commit();
             while (resultSet.next()) {
                 String json = resultSet.getString(1);
                 ObjectMapper mapper = new ObjectMapper();
@@ -138,7 +138,30 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public void deleteAPI(Organization organization, String s) throws APIPersistenceException {
+    public void deleteAPI(Organization organization, String apiUUID) throws APIPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String deleteAPIQuery = "DELETE FROM api_artifacts WHERE org=? AND uuid=?;";
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+
+            preparedStatement = connection.prepareStatement(deleteAPIQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiUUID);
+            preparedStatement.executeUpdate();
+            connection.commit();
+
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"delete api");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while deleting entry from API_ARTIFACTS table ", e);
+            }
+            handleException("Error occurred while deleting entry from API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
 
     }
 
@@ -173,10 +196,10 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         try {
             connection = PostgresDBConnectionUtil.getConnection();
             connection.setAutoCommit(false);
-            connection.commit();
             preparedStatement = connection.prepareStatement(searchQuery);
             preparedStatement.setString(1, org);
             resultSet = preparedStatement.executeQuery();
+            connection.commit();
             List<PublisherAPIInfo> publisherAPIInfoList = new ArrayList<>();
             while (resultSet.next()) {
                 String json = resultSet.getString(1);
