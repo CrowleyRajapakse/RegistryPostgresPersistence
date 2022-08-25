@@ -1,0 +1,4 @@
+org/wso2/apk/extensions/persistence/postgres/utils/PostgresDBConnectionUtil.class
+org/wso2/apk/extensions/persistence/postgres/PostgresDBPersistentImpl.class
+org/wso2/apk/extensions/persistence/postgres/internal/PostgresPersistenceComponent.class
+org/wso2/apk/extensions/persistence/postgres/exceptions/InvalidObjectIdException.class
