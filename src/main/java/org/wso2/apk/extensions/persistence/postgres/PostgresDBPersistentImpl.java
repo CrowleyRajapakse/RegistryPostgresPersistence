@@ -8,6 +8,7 @@ import org.apache.commons.logging.LogFactory;
 import org.wso2.apk.extensions.persistence.postgres.utils.PostgresDBConnectionUtil;
 import org.wso2.carbon.apimgt.api.model.API;
 import org.wso2.carbon.apimgt.api.model.Tag;
+import org.wso2.carbon.apimgt.persistence.APIConstants;
 import org.wso2.carbon.apimgt.persistence.APIPersistence;
 import org.wso2.carbon.apimgt.persistence.dto.*;
 import org.wso2.carbon.apimgt.persistence.exceptions.*;
@@ -15,6 +16,7 @@ import org.wso2.carbon.apimgt.persistence.mapper.APIMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import org.wso2.carbon.apimgt.persistence.utils.PublisherAPISearchResultComparator;
+import org.wso2.carbon.apimgt.persistence.utils.RegistryPersistenceUtil;
 
 import java.io.IOException;
 import java.sql.Connection;
@@ -247,8 +249,61 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public PublisherContentSearchResult searchContentForPublisher(Organization organization, String s, int i, int i1, UserContext userContext) throws APIPersistenceException {
-        return null;
+    public PublisherContentSearchResult searchContentForPublisher(Organization org, String searchQuery, int i, int i1, UserContext userContext) throws APIPersistenceException {
+        int totalLength = 0;
+        PublisherContentSearchResult searchResults = new PublisherContentSearchResult();
+        PublisherAPI publisherAPI;
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+
+        String searchContentQuery = "SELECT DISTINCT artefact,uuid FROM api_artifacts JOIN jsonb_each_text(artefact) e ON true \n" +
+                " WHERE org=? AND e.value LIKE ?;";
+
+        String modifiedSearchQuery = "%" + searchQuery.substring(8) +"%";
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(searchContentQuery);
+            preparedStatement.setString(1, org.getName());
+            preparedStatement.setString(2, modifiedSearchQuery);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            List<SearchContent> contentData = new ArrayList<>();
+            while (resultSet.next()) {
+                String json = resultSet.getString(1);
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode tree = mapper.readTree(json);
+                publisherAPI = mapper.treeToValue(tree, PublisherAPI.class);
+                PublisherSearchContent content = new PublisherSearchContent();
+                content.setContext(publisherAPI.getContext());
+                content.setDescription(publisherAPI.getDescription());
+                content.setId(resultSet.getString(2));
+                content.setName(publisherAPI.getApiName());
+                content.setProvider(publisherAPI.getProviderName());
+                content.setType(APIConstants.API);
+                content.setVersion(publisherAPI.getVersion());
+                content.setStatus(publisherAPI.getStatus());
+                contentData.add(content);
+                totalLength ++;
+            }
+            searchResults.setResults(contentData);
+            searchResults.setReturnedCount(contentData.size());
+            searchResults.setTotalCount(totalLength);
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while content searching api artefacts");
+            }
+            handleException("Error while content searching api artefacts", e);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return searchResults;
     }
 
     @Override
