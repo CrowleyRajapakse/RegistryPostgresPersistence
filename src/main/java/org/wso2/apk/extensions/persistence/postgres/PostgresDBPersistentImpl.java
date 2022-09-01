@@ -16,9 +16,13 @@ import org.wso2.carbon.apimgt.persistence.mapper.APIMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import org.wso2.carbon.apimgt.persistence.utils.PublisherAPISearchResultComparator;
+import org.wso2.carbon.apimgt.persistence.utils.RegistryPersistenceDocUtil;
 import org.wso2.carbon.apimgt.persistence.utils.RegistryPersistenceUtil;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -357,8 +361,42 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public Documentation addDocumentation(Organization organization, String s, Documentation documentation) throws DocumentationPersistenceException {
-        return null;
+    public Documentation addDocumentation(Organization organization, String apiUUID, Documentation documentation) throws DocumentationPersistenceException {
+
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String addDocumentQuery =
+                "INSERT INTO AM_API_DOCUMENT_METADATA (org, apiUUID, docUUID, docName, summary, docType, docSourceType, docSourceUrl, visibility) VALUES(?,?,?,?,?,?,?,?,?);";
+        String docUUID = UUID.nameUUIDFromBytes((documentation.getName() + apiUUID).getBytes()).toString();
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+
+            preparedStatement = connection.prepareStatement(addDocumentQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiUUID);
+            preparedStatement.setString(3, docUUID);
+            preparedStatement.setString(4, documentation.getName());
+            preparedStatement.setString(5, documentation.getSummary());
+            preparedStatement.setString(6, documentation.getType().getType());
+            preparedStatement.setString(7, documentation.getSourceType().toString());
+            preparedStatement.setString(8, documentation.getSourceUrl());
+            preparedStatement.setString(9, documentation.getVisibility().toString());
+            preparedStatement.executeUpdate();
+            connection.commit();
+
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"add document");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while adding entry to AM_API_DOCUMENT_METADATA table ", e);
+            }
+            throw new DocumentationPersistenceException("Error while persisting entry to AM_API_DOCUMENT_METADATA table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
+        documentation.setId(docUUID);
+        return documentation;
     }
 
     @Override
@@ -367,23 +405,272 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public Documentation getDocumentation(Organization organization, String s, String s1) throws DocumentationPersistenceException {
-        return null;
+    public Documentation getDocumentation(Organization organization, String apiUUID, String docUUID) throws DocumentationPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        Documentation documentation = null;
+        String getDocumentQuery = "SELECT org, apiUUID, docUUID, docName, summary, docType, docSourceType, docSourceUrl, visibility from AM_API_DOCUMENT_METADATA WHERE org=? AND apiUUID=? AND docUUID=?;";
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getDocumentQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiUUID);
+            preparedStatement.setString(3, docUUID);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String docType = resultSet.getString("docType");
+                DocumentationType type;
+                if (docType.equalsIgnoreCase(DocumentationType.HOWTO.getType())) {
+                    type = DocumentationType.HOWTO;
+                } else if (docType.equalsIgnoreCase(DocumentationType.PUBLIC_FORUM.getType())) {
+                    type = DocumentationType.PUBLIC_FORUM;
+                } else if (docType.equalsIgnoreCase(DocumentationType.SUPPORT_FORUM.getType())) {
+                    type = DocumentationType.SUPPORT_FORUM;
+                } else if (docType.equalsIgnoreCase(DocumentationType.API_MESSAGE_FORMAT.getType())) {
+                    type = DocumentationType.API_MESSAGE_FORMAT;
+                } else if (docType.equalsIgnoreCase(DocumentationType.SAMPLES.getType())) {
+                    type = DocumentationType.SAMPLES;
+                } else {
+                    type = DocumentationType.OTHER;
+                }
+                String docName = resultSet.getString("docName");
+                documentation = new Documentation(type, docName);
+                documentation.setId(docUUID);
+                documentation.setSummary(resultSet.getString("summary"));
+                documentation.setSourceUrl(resultSet.getString("docSourceUrl"));
+                String visibilityAttr = resultSet.getString("visibility");
+                Documentation.DocumentVisibility documentVisibility = Documentation.DocumentVisibility.API_LEVEL;
+
+                if (visibilityAttr != null) {
+                    if (visibilityAttr.equals(Documentation.DocumentVisibility.API_LEVEL.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.API_LEVEL;
+                    } else if (visibilityAttr.equals(Documentation.DocumentVisibility.PRIVATE.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.PRIVATE;
+                    } else if (visibilityAttr.equals(Documentation.DocumentVisibility.OWNER_ONLY.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.OWNER_ONLY;
+                    }
+                }
+                documentation.setVisibility(documentVisibility);
+
+                Documentation.DocumentSourceType docSourceType = Documentation.DocumentSourceType.INLINE;
+                String artifactAttribute = resultSet.getString("docSourceType");
+
+                if (Documentation.DocumentSourceType.URL.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.URL;
+                    documentation.setSourceUrl(resultSet.getString("docSourceUrl"));
+                } else if (Documentation.DocumentSourceType.FILE.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.FILE;
+                } else if (Documentation.DocumentSourceType.MARKDOWN.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.MARKDOWN;
+                }
+                documentation.setSourceType(docSourceType);
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving document for doc uuid: " + docUUID);
+            }
+            throw new DocumentationPersistenceException("Error while retrieving document for doc uuid: " + docUUID, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return documentation;
     }
 
     @Override
-    public DocumentContent getDocumentationContent(Organization organization, String s, String s1) throws DocumentationPersistenceException {
-        return null;
+    public DocumentContent getDocumentationContent(Organization organization, String apiUUID, String docUUID) throws DocumentationPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        DocumentContent documentContent = null;
+        String getDocumentContentQuery = "SELECT docSourceType, doc, docContent, docSourceUrl from AM_API_DOCUMENT_METADATA WHERE org=? AND apiUUID=? AND docUUID=?;";
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getDocumentContentQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiUUID);
+            preparedStatement.setString(3, docUUID);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String docSourceType = resultSet.getString("docSourceType");
+                InputStream docBlob = resultSet.getBinaryStream("doc");
+                String doc = null;
+                if (docBlob != null) {
+                    doc = PostgresDBConnectionUtil.getStringFromInputStream(docBlob);
+                }
+                documentContent = new DocumentContent();
+                if (StringUtils.equals(docSourceType,Documentation.DocumentSourceType.FILE.toString())) {
+                    if (doc != null) {
+                        ResourceFile resourceFile = new ResourceFile(docBlob, "PDF");
+                        documentContent.setResourceFile(resourceFile);
+                        documentContent
+                                .setSourceType(DocumentContent.ContentSourceType.valueOf(docSourceType));
+                    }
+                } else if (StringUtils.equals(docSourceType,Documentation.DocumentSourceType.INLINE.toString())
+                        || StringUtils.equals(docSourceType,Documentation.DocumentSourceType.MARKDOWN.toString())) {
+                    if (doc != null) {
+                        documentContent.setTextContent(doc);
+                        documentContent
+                                .setSourceType(DocumentContent.ContentSourceType.valueOf(docSourceType));
+                    }
+
+                } else if (StringUtils.equals(docSourceType,Documentation.DocumentSourceType.URL.toString())) {
+
+                    String sourceUrl = resultSet.getString("docSourceUrl");
+                    documentContent.setTextContent(sourceUrl);
+                    documentContent
+                            .setSourceType(DocumentContent.ContentSourceType.valueOf(docSourceType));
+                }
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving document content for doc uuid: " + docUUID);
+            }
+            throw new DocumentationPersistenceException("Error while retrieving document content for doc uuid: " + docUUID, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return documentContent;
     }
 
     @Override
-    public DocumentContent addDocumentationContent(Organization organization, String s, String s1, DocumentContent documentContent) throws DocumentationPersistenceException {
-        return null;
+    public DocumentContent addDocumentationContent(Organization organization, String apiUUID, String docUUID, DocumentContent documentContent) throws DocumentationPersistenceException {
+
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String addDocumentContentQuery = "UPDATE AM_API_DOCUMENT SET doc=?,docContent=to_tsvector(?) WHERE org=? AND apiUUID=? AND docUUID=?;";
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+
+            preparedStatement = connection.prepareStatement(addDocumentContentQuery);
+            if (documentContent.getResourceFile() != null && documentContent.getResourceFile().getContent() != null) {
+                byte[] docByte = documentContent.getResourceFile().getContent().toString().getBytes();
+                preparedStatement.setBinaryStream(1, new ByteArrayInputStream(docByte));
+            } else {
+                preparedStatement.setBinaryStream(1, new ByteArrayInputStream(documentContent.getTextContent().getBytes()));
+            }
+            preparedStatement.setString(2, documentContent.getTextContent());
+            preparedStatement.setString(3, organization.getName());
+            preparedStatement.setString(4, apiUUID);
+            preparedStatement.setString(5, docUUID);
+            preparedStatement.executeUpdate();
+            connection.commit();
+
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"add document content");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while adding entry to AM_API_DOCUMENT table ", e);
+            }
+            throw new DocumentationPersistenceException("Error while persisting entry to AM_API_DOCUMENT table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
+        return documentContent;
     }
 
     @Override
-    public DocumentSearchResult searchDocumentation(Organization organization, String s, int i, int i1, String s1, UserContext userContext) throws DocumentationPersistenceException {
-        return null;
+    public DocumentSearchResult searchDocumentation(Organization org, String apiUUID, int start, int offset,
+                                                    String searchQuery, UserContext ctx) throws DocumentationPersistenceException {
+        DocumentSearchResult result = new DocumentSearchResult();
+
+        int totalLength = 0;
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+
+        String searchAllQuery = "SELECT * FROM AM_API_DOCUMENT_METADATA WHERE org=? and apiUUID=?;";
+
+        try {
+            connection = PostgresDBConnectionUtil.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(searchAllQuery);
+            preparedStatement.setString(1, org.getName());
+            preparedStatement.setString(2, apiUUID);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            List<Documentation> documentationList = new ArrayList<Documentation>();
+            Documentation documentation = null;
+            while (resultSet.next()) {
+                String docType = resultSet.getString("docType");
+                DocumentationType type;
+                if (docType.equalsIgnoreCase(DocumentationType.HOWTO.getType())) {
+                    type = DocumentationType.HOWTO;
+                } else if (docType.equalsIgnoreCase(DocumentationType.PUBLIC_FORUM.getType())) {
+                    type = DocumentationType.PUBLIC_FORUM;
+                } else if (docType.equalsIgnoreCase(DocumentationType.SUPPORT_FORUM.getType())) {
+                    type = DocumentationType.SUPPORT_FORUM;
+                } else if (docType.equalsIgnoreCase(DocumentationType.API_MESSAGE_FORMAT.getType())) {
+                    type = DocumentationType.API_MESSAGE_FORMAT;
+                } else if (docType.equalsIgnoreCase(DocumentationType.SAMPLES.getType())) {
+                    type = DocumentationType.SAMPLES;
+                } else {
+                    type = DocumentationType.OTHER;
+                }
+                String docName = resultSet.getString("docName");
+                documentation = new Documentation(type, docName);
+                documentation.setId(resultSet.getString("docUUID"));
+                documentation.setSummary(resultSet.getString("summary"));
+                documentation.setSourceUrl(resultSet.getString("docSourceUrl"));
+                String visibilityAttr = resultSet.getString("visibility");
+                Documentation.DocumentVisibility documentVisibility = Documentation.DocumentVisibility.API_LEVEL;
+
+                if (visibilityAttr != null) {
+                    if (visibilityAttr.equals(Documentation.DocumentVisibility.API_LEVEL.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.API_LEVEL;
+                    } else if (visibilityAttr.equals(Documentation.DocumentVisibility.PRIVATE.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.PRIVATE;
+                    } else if (visibilityAttr.equals(Documentation.DocumentVisibility.OWNER_ONLY.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.OWNER_ONLY;
+                    }
+                }
+                documentation.setVisibility(documentVisibility);
+
+                Documentation.DocumentSourceType docSourceType = Documentation.DocumentSourceType.INLINE;
+                String artifactAttribute = resultSet.getString("docSourceType");
+
+                if (Documentation.DocumentSourceType.URL.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.URL;
+                    documentation.setSourceUrl(resultSet.getString("docSourceUrl"));
+                } else if (Documentation.DocumentSourceType.FILE.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.FILE;
+                } else if (Documentation.DocumentSourceType.MARKDOWN.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.MARKDOWN;
+                }
+                documentation.setSourceType(docSourceType);
+                if (searchQuery != null) {
+                    if (searchQuery.toLowerCase().startsWith("name:")) {
+                        String requestedDocName = searchQuery.split(":")[1];
+                        if (documentation.getName().equalsIgnoreCase(requestedDocName)) {
+                            documentationList.add(documentation);
+                        }
+                    } else {
+                        log.warn("Document search not implemented for the query " + searchQuery);
+                    }
+                } else {
+                    documentationList.add(documentation);
+                }
+                totalLength ++;
+            }
+            result.setDocumentationList(documentationList);
+            result.setTotalDocsCount(totalLength);
+            result.setReturnedDocsCount(totalLength);
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving documents");
+            }
+            throw new DocumentationPersistenceException("Error while retrieving documents", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return result;
     }
 
     @Override

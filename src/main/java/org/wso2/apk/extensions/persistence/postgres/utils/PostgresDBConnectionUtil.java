@@ -67,8 +67,10 @@ public final class PostgresDBConnectionUtil {
 //            return dataSource.getConnection();
 //        }
 //        throw new SQLException("Data source is not configured properly.");
-        return DriverManager.getConnection("jdbc:postgresql://localhost:5432/amdb2",
-                "sampath", "sampath");
+//        return DriverManager.getConnection("jdbc:postgresql://localhost:5432/amdb",
+//                "sampath", "sampath");
+        return DriverManager.getConnection("jdbc:postgresql://localhost:5433/amdb",
+                "postgres", "SUAJiPyiHsfV93EucjOa4qWwQP7Qb2KXLqDFxI8K8LUaNLvvI0xzaddx2iheRGB1");
     }
 
     /**
