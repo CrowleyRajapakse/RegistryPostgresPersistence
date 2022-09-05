@@ -259,7 +259,9 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         PublisherAPI publisherAPI;
         Connection connection = null;
         PreparedStatement preparedStatement = null;
+        PreparedStatement preparedStatementDoc = null;
         ResultSet resultSet = null;
+        ResultSet resultSetDoc = null;
 
         String searchContentQuery = "SELECT DISTINCT artefact,uuid FROM api_artifacts JOIN jsonb_each_text(artefact) e ON true \n" +
                 " WHERE org=? AND e.value LIKE ?;";
@@ -292,9 +294,88 @@ public class PostgresDBPersistentImpl implements APIPersistence {
                 contentData.add(content);
                 totalLength ++;
             }
+
+            // Adding doc search
+            String docSearchQuery = "SELECT ad.apiUUID, ad.docUUID, ar.api_name, ar.api_version, ar.api_provider, ar.api_type, ad.docName, ad.docType, ad.docSourceType, ad.visibility FROM AM_API_DOCUMENT_METADATA ad, AM_API ar WHERE ad.org=? AND ad.docContent @@ to_tsquery(?) AND ad.apiUUID=ar.api_uuid;";
+            String modifiedDocQuery = "";
+            if (searchQuery.substring(8).split(" ").length <= 1) {
+                modifiedDocQuery = searchQuery.substring(8);
+            } else {
+                modifiedDocQuery = searchQuery.substring(8).replace(" "," & ");
+            }
+            preparedStatementDoc = connection.prepareStatement(docSearchQuery);
+            preparedStatementDoc.setString(1, org.getName());
+            preparedStatementDoc.setString(2, modifiedDocQuery);
+            resultSetDoc = preparedStatementDoc.executeQuery();
+            connection.commit();
+            while (resultSetDoc.next()) {
+                DocumentSearchContent docSearch = new DocumentSearchContent();
+                String apiUUID = resultSetDoc.getString("apiUUID");
+                String docUUID = resultSetDoc.getString("docUUID");
+                String apiType = resultSetDoc.getString("api_type");
+                String accociatedType;
+                if (apiType.
+                        equals(APIConstants.AuditLogConstants.API_PRODUCT)) {
+                    accociatedType = APIConstants.API_PRODUCT;
+                } else {
+                    accociatedType = APIConstants.API;
+                }
+                String docType = resultSetDoc.getString("docType");
+                DocumentationType type;
+                if (docType.equalsIgnoreCase(DocumentationType.HOWTO.getType())) {
+                    type = DocumentationType.HOWTO;
+                } else if (docType.equalsIgnoreCase(DocumentationType.PUBLIC_FORUM.getType())) {
+                    type = DocumentationType.PUBLIC_FORUM;
+                } else if (docType.equalsIgnoreCase(DocumentationType.SUPPORT_FORUM.getType())) {
+                    type = DocumentationType.SUPPORT_FORUM;
+                } else if (docType.equalsIgnoreCase(DocumentationType.API_MESSAGE_FORMAT.getType())) {
+                    type = DocumentationType.API_MESSAGE_FORMAT;
+                } else if (docType.equalsIgnoreCase(DocumentationType.SAMPLES.getType())) {
+                    type = DocumentationType.SAMPLES;
+                } else {
+                    type = DocumentationType.OTHER;
+                }
+
+                String visibilityAttr = resultSetDoc.getString("visibility");
+                Documentation.DocumentVisibility documentVisibility = Documentation.DocumentVisibility.API_LEVEL;
+
+                if (visibilityAttr != null) {
+                    if (visibilityAttr.equals(Documentation.DocumentVisibility.API_LEVEL.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.API_LEVEL;
+                    } else if (visibilityAttr.equals(Documentation.DocumentVisibility.PRIVATE.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.PRIVATE;
+                    } else if (visibilityAttr.equals(Documentation.DocumentVisibility.OWNER_ONLY.name())) {
+                        documentVisibility = Documentation.DocumentVisibility.OWNER_ONLY;
+                    }
+                }
+
+                Documentation.DocumentSourceType docSourceType = Documentation.DocumentSourceType.INLINE;
+                String artifactAttribute = resultSetDoc.getString("docSourceType");
+
+                if (Documentation.DocumentSourceType.URL.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.URL;
+                } else if (Documentation.DocumentSourceType.FILE.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.FILE;
+                } else if (Documentation.DocumentSourceType.MARKDOWN.name().equals(artifactAttribute)) {
+                    docSourceType = Documentation.DocumentSourceType.MARKDOWN;
+                }
+                docSearch.setApiName(resultSetDoc.getString("api_name"));
+                docSearch.setApiProvider(resultSetDoc.getString("api_provider"));
+                docSearch.setApiVersion(resultSetDoc.getString("api_version"));
+                docSearch.setApiUUID(apiUUID);
+                docSearch.setAssociatedType(accociatedType);
+                docSearch.setDocType(type);
+                docSearch.setId(docUUID);
+                docSearch.setSourceType(docSourceType);
+                docSearch.setVisibility(documentVisibility);
+                docSearch.setName(resultSetDoc.getString("docName"));
+                contentData.add(docSearch);
+                totalLength ++;
+            }
             searchResults.setResults(contentData);
             searchResults.setReturnedCount(contentData.size());
             searchResults.setTotalCount(totalLength);
+
         } catch (SQLException e) {
             if (log.isDebugEnabled()) {
                 log.debug("Error while content searching api artefacts");
