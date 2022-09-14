@@ -45,6 +45,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String addAPIQuery = "INSERT INTO API_ARTIFACTS (org, uuid, artefact, apiDefinition, mediaType) VALUES(?,?,to_json(?::json),?,?);";
         API api = APIMapper.INSTANCE.toApi(publisherAPI);
         String uuid = UUID.nameUUIDFromBytes(api.getId().getApiName().getBytes()).toString();
+        publisherAPI.setId(uuid);
         String json = "";
         ObjectWriter ow = new ObjectMapper().writer().withDefaultPrettyPrinter();
         try {
@@ -64,7 +65,18 @@ public class PostgresDBPersistentImpl implements APIPersistence {
             if (api.getSwaggerDefinition() != null) {
                 byte[] apiDefinitionBytes = api.getSwaggerDefinition().getBytes();
                 preparedStatement.setBinaryStream(4, new ByteArrayInputStream(apiDefinitionBytes));
-                preparedStatement.setString(5, "swagger.json");
+                preparedStatement.setString(5, APIConstants.API_OAS_DEFINITION_RESOURCE_NAME);
+            } else if (api.getAsyncApiDefinition() != null) {
+                byte[] apiDefinitionBytes = api.getAsyncApiDefinition().getBytes();
+                preparedStatement.setBinaryStream(4, new ByteArrayInputStream(apiDefinitionBytes));
+                preparedStatement.setString(5, APIConstants.API_ASYNC_API_DEFINITION_RESOURCE_NAME);
+            } else if (api.getGraphQLSchema() != null) {
+                byte[] apiDefinitionBytes = api.getGraphQLSchema().getBytes();
+                preparedStatement.setBinaryStream(4, new ByteArrayInputStream(apiDefinitionBytes));
+                preparedStatement.setString(5, "graphql" + APIConstants.GRAPHQL_SCHEMA_FILE_EXTENSION);
+            } else {
+                preparedStatement.setBinaryStream(4, null);
+                preparedStatement.setString(5, null);
             }
             preparedStatement.executeUpdate();
             connection.commit();
@@ -106,7 +118,38 @@ public class PostgresDBPersistentImpl implements APIPersistence {
 
     @Override
     public PublisherAPI updateAPI(Organization organization, PublisherAPI publisherAPI) throws APIPersistenceException {
-        return null;
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String updateAPIQuery = "UPDATE API_ARTIFACTS SET artefact=to_json(?::json) WHERE org=? AND uuid=?;";
+        API api = APIMapper.INSTANCE.toApi(publisherAPI);
+        String uuid = api.getUuid();
+        String json = "";
+        ObjectWriter ow = new ObjectMapper().writer().withDefaultPrettyPrinter();
+        try {
+            json = ow.writeValueAsString(publisherAPI);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(updateAPIQuery);
+            preparedStatement.setString(1, json);
+            preparedStatement.setString(2, organization.getName());
+            preparedStatement.setString(3, uuid);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"update api");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            handleException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
+        PublisherAPI returnAPI = APIMapper.INSTANCE.toPublisherApi(api);
+        return returnAPI;
     }
 
     @Override
@@ -410,13 +453,78 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public void saveWSDL(Organization organization, String s, ResourceFile resourceFile) throws WSDLPersistenceException {
-
+    public void saveWSDL(Organization organization, String apiId, ResourceFile wsdlResourceFile) throws WSDLPersistenceException {
+//        String mediaType;
+//        if (APIConstants.APPLICATION_ZIP.equals(wsdlResourceFile.getContentType())) {
+//            mediaType = wsdlResourceFile.getName() + APIConstants.ZIP_FILE_EXTENSION;
+//        } else {
+//            mediaType = wsdlResourceFile.getName() + ".wsdl";
+//        }
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String saveWSDLQuery = "UPDATE API_ARTIFACTS SET wsdlDefinition=?,wsdlMediaType=?, artefact[?] = to_jsonb(?) WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(saveWSDLQuery);
+            if (wsdlResourceFile.getContent() != null) {
+                preparedStatement.setBinaryStream(1, wsdlResourceFile.getContent());
+                preparedStatement.setString(2, wsdlResourceFile.getContentType());
+                preparedStatement.setString(3,"wsdlUrl");
+                preparedStatement.setString(4,"wsdl");
+            }
+            preparedStatement.setString(5, organization.getName());
+            preparedStatement.setString(6, apiId);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"Save WSDL definition");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            throw new WSDLPersistenceException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
-    public ResourceFile getWSDL(Organization organization, String s) throws WSDLPersistenceException {
-        return null;
+    public ResourceFile getWSDL(Organization organization, String apiId) throws WSDLPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        ResourceFile returnResource = null;
+        String getWSDLQuery = "SELECT wsdlDefinition,wsdlMediaType from API_ARTIFACTS WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getWSDLQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiId);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String mediaType = resultSet.getString("wsdlMediaType");
+                InputStream apiDefinitionBlob = resultSet.getBinaryStream("wsdlDefinition");
+                if (apiDefinitionBlob != null) {
+                    byte[] artifactByte = PostgresDBConnectionUtil.getBytesFromInputStream(apiDefinitionBlob);
+                    try (InputStream newArtifact = new ByteArrayInputStream(artifactByte)) {
+                        returnResource = new ResourceFile(newArtifact, mediaType);
+                        //returnResource.setName(resourceFileName);
+                    } catch (IOException e) {
+                        throw new WSDLPersistenceException("Error occurred retrieving input stream from byte array.", e);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving WSDL definition for api uuid: " + apiId);
+            }
+            throw new WSDLPersistenceException("Error while retrieving WSDL definition for api uuid: " + apiId, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return returnResource;
     }
 
     @Override
@@ -431,7 +539,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
             if (apiDefinition != null) {
                 byte[] apiDefinitionBytes = apiDefinition.getBytes();
                 preparedStatement.setBinaryStream(1, new ByteArrayInputStream(apiDefinitionBytes));
-                preparedStatement.setString(2, "swagger.json");
+                preparedStatement.setString(2, APIConstants.API_OAS_DEFINITION_RESOURCE_NAME);
             }
             preparedStatement.setString(3, organization.getName());
             preparedStatement.setString(4, apiId);
@@ -482,23 +590,127 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public void saveAsyncDefinition(Organization organization, String s, String s1) throws AsyncSpecPersistenceException {
-
+    public void saveAsyncDefinition(Organization organization, String apiId, String apiDefinition) throws AsyncSpecPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String saveOASQuery = "UPDATE API_ARTIFACTS SET apiDefinition=?,mediaType=? WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(saveOASQuery);
+            if (apiDefinition != null) {
+                byte[] apiDefinitionBytes = apiDefinition.getBytes();
+                preparedStatement.setBinaryStream(1, new ByteArrayInputStream(apiDefinitionBytes));
+                preparedStatement.setString(2, APIConstants.API_ASYNC_API_DEFINITION_RESOURCE_NAME);
+            }
+            preparedStatement.setString(3, organization.getName());
+            preparedStatement.setString(4, apiId);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"Save Async API definition");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            throw new AsyncSpecPersistenceException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
-    public String getAsyncDefinition(Organization organization, String s) throws AsyncSpecPersistenceException {
-        return null;
+    public String getAsyncDefinition(Organization organization, String apiId) throws AsyncSpecPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        String asyncDefinition = null;
+        String getAsyncDefinitionQuery = "SELECT apiDefinition,mediaType from API_ARTIFACTS WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getAsyncDefinitionQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiId);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String mediaType = resultSet.getString("mediaType");
+                InputStream apiDefinitionBlob = resultSet.getBinaryStream("apiDefinition");
+                if (apiDefinitionBlob != null) {
+                    asyncDefinition = PostgresDBConnectionUtil.getStringFromInputStream(apiDefinitionBlob);
+                }
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving async definition for api uuid: " + apiId);
+            }
+            throw new AsyncSpecPersistenceException("Error while retrieving async definition for api uuid: " + apiId, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return asyncDefinition;
     }
 
     @Override
-    public void saveGraphQLSchemaDefinition(Organization organization, String s, String s1) throws GraphQLPersistenceException {
-
+    public void saveGraphQLSchemaDefinition(Organization organization, String apiId, String schemaDefinition) throws GraphQLPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String saveOASQuery = "UPDATE API_ARTIFACTS SET apiDefinition=?,mediaType=? WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(saveOASQuery);
+            if (schemaDefinition != null) {
+                byte[] apiDefinitionBytes = schemaDefinition.getBytes();
+                preparedStatement.setBinaryStream(1, new ByteArrayInputStream(apiDefinitionBytes));
+                preparedStatement.setString(2, "graphql" + APIConstants.GRAPHQL_SCHEMA_FILE_EXTENSION);
+            }
+            preparedStatement.setString(3, organization.getName());
+            preparedStatement.setString(4, apiId);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"Save GraphQL Schema Definition");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            throw new GraphQLPersistenceException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
-    public String getGraphQLSchema(Organization organization, String s) throws GraphQLPersistenceException {
-        return null;
+    public String getGraphQLSchema(Organization organization, String apiId) throws GraphQLPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        String graphQLDefinition = null;
+        String getGraphQLDefinitionQuery = "SELECT apiDefinition,mediaType from API_ARTIFACTS WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getGraphQLDefinitionQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiId);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String mediaType = resultSet.getString("mediaType");
+                InputStream apiDefinitionBlob = resultSet.getBinaryStream("apiDefinition");
+                if (apiDefinitionBlob != null) {
+                    graphQLDefinition = PostgresDBConnectionUtil.getStringFromInputStream(apiDefinitionBlob);
+                }
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving graphQL definition for api uuid: " + apiId);
+            }
+            throw new GraphQLPersistenceException("Error while retrieving graphQL definition for api uuid: " + apiId, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return graphQLDefinition;
     }
 
     @Override

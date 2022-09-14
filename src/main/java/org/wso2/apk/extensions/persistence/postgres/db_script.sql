@@ -2,7 +2,12 @@ CREATE TABLE API_ARTIFACTS (
 	id serial NOT NULL PRIMARY KEY,
 	org VARCHAR(100) NOT NULL,
 	uuid  VARCHAR(100) NOT NULL,
-	artefact jsonp NOT NULL
+	artefact jsonb NOT NULL,
+	apiDefinition bytea,
+	mediaType VARCHAR(100),
+	wsdlDefinition bytea,
+	wsdlMediaType VARCHAR(100),
+	thumbnail bytea
 );
 
 CREATE TABLE AM_API_DOCUMENT (
