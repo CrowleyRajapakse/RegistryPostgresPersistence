@@ -11,7 +11,7 @@ import org.wso2.carbon.apimgt.api.APIManagerDatabaseException;
 import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
-import javax.sql.DataSource;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.sql.*;
@@ -19,7 +19,7 @@ import java.util.Map;
 
 public final class PostgresDBConnectionUtil {
     private static final Log log = LogFactory.getLog(PostgresDBConnectionUtil.class);
-    private static volatile DataSource dataSource = null;
+    private static volatile HikariCPDataSource dataSource = null;
     private static final String DB_CHECK_SQL = "SELECT * FROM AM_API";
 
     private static final String DATA_SOURCE_NAME = "DataSourceName";
@@ -40,11 +40,10 @@ public final class PostgresDBConnectionUtil {
                     log.debug("Initializing data source");
                 }
                 String dataSourceName = "jdbc/WSO2AM_DB";
-
                 if (dataSourceName != null) {
                     try {
                         Context ctx = new InitialContext();
-                        dataSource = (DataSource) ctx.lookup(dataSourceName);
+                        dataSource = (HikariCPDataSource) ctx.lookup(dataSourceName);
                     } catch (NamingException e) {
                         throw new APIManagerDatabaseException("Error while looking up the data " +
                                 "source: " + dataSourceName, e);
@@ -62,16 +61,16 @@ public final class PostgresDBConnectionUtil {
      * @return Connection
      * @throws java.sql.SQLException if failed to get Connection
      */
-    public static Connection getConnection() throws SQLException {
+//    public static Connection getConnection() throws SQLException {
 //        if (dataSource != null) {
 //            return dataSource.getConnection();
 //        }
 //        throw new SQLException("Data source is not configured properly.");
 //        return DriverManager.getConnection("jdbc:postgresql://localhost:5432/amdb",
 //                "sampath", "sampath");
-        return DriverManager.getConnection("jdbc:postgresql://localhost:5433/amdb",
-                "postgres", "SUAJiPyiHsfV93EucjOa4qWwQP7Qb2KXLqDFxI8K8LUaNLvvI0xzaddx2iheRGB1");
-    }
+//        return DriverManager.getConnection("jdbc:postgresql://localhost:5433/amdb",
+//                "postgres", "SUAJiPyiHsfV93EucjOa4qWwQP7Qb2KXLqDFxI8K8LUaNLvvI0xzaddx2iheRGB1");
+//    }
 
     /**
      * Utility method to close the connection streams.

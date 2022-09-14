@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.wso2.apk.extensions.persistence.postgres.utils.HikariCPDataSource;
 import org.wso2.apk.extensions.persistence.postgres.utils.PostgresDBConnectionUtil;
 import org.wso2.carbon.apimgt.api.model.API;
 import org.wso2.carbon.apimgt.api.model.Tag;
@@ -18,6 +19,8 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 import org.wso2.carbon.apimgt.persistence.utils.PublisherAPISearchResultComparator;
 import org.wso2.carbon.apimgt.persistence.utils.RegistryPersistenceDocUtil;
 import org.wso2.carbon.apimgt.persistence.utils.RegistryPersistenceUtil;
+import org.wso2.carbon.registry.core.Resource;
+import org.wso2.carbon.registry.core.session.UserRegistry;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -39,7 +42,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
 
         Connection connection = null;
         PreparedStatement preparedStatement = null;
-        String addAPIQuery = "INSERT INTO API_ARTIFACTS (org, uuid, artefact) VALUES(?,?,to_json(?::json));";
+        String addAPIQuery = "INSERT INTO API_ARTIFACTS (org, uuid, artefact, apiDefinition, mediaType) VALUES(?,?,to_json(?::json),?,?);";
         API api = APIMapper.INSTANCE.toApi(publisherAPI);
         String uuid = UUID.nameUUIDFromBytes(api.getId().getApiName().getBytes()).toString();
         String json = "";
@@ -51,13 +54,18 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         }
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
 
             preparedStatement = connection.prepareStatement(addAPIQuery);
             preparedStatement.setString(1, organization.getName());
             preparedStatement.setString(2, uuid);
             preparedStatement.setString(3, json);
+            if (api.getSwaggerDefinition() != null) {
+                byte[] apiDefinitionBytes = api.getSwaggerDefinition().getBytes();
+                preparedStatement.setBinaryStream(4, new ByteArrayInputStream(apiDefinitionBytes));
+                preparedStatement.setString(5, "swagger.json");
+            }
             preparedStatement.executeUpdate();
             connection.commit();
 
@@ -110,7 +118,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String getAPIArtefactQuery = "SELECT artefact from API_ARTIFACTS WHERE org=? AND uuid=?;";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
             preparedStatement = connection.prepareStatement(getAPIArtefactQuery);
             preparedStatement.setString(1, organization.getName());
@@ -150,7 +158,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String deleteAPIQuery = "DELETE FROM api_artifacts WHERE org=? AND uuid=?;";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
 
             preparedStatement = connection.prepareStatement(deleteAPIQuery);
@@ -200,7 +208,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         ResultSet resultSet = null;
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
             preparedStatement = connection.prepareStatement(searchQuery);
             preparedStatement.setString(1, org);
@@ -269,7 +277,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String modifiedSearchQuery = "%" + searchQuery.substring(8) +"%";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
             preparedStatement = connection.prepareStatement(searchContentQuery);
             preparedStatement.setString(1, org.getName());
@@ -412,13 +420,65 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public void saveOASDefinition(Organization organization, String s, String s1) throws OASPersistenceException {
-
+    public void saveOASDefinition(Organization organization, String apiId, String apiDefinition) throws OASPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String saveOASQuery = "UPDATE API_ARTIFACTS SET apiDefinition=?,mediaType=? WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(saveOASQuery);
+            if (apiDefinition != null) {
+                byte[] apiDefinitionBytes = apiDefinition.getBytes();
+                preparedStatement.setBinaryStream(1, new ByteArrayInputStream(apiDefinitionBytes));
+                preparedStatement.setString(2, "swagger.json");
+            }
+            preparedStatement.setString(3, organization.getName());
+            preparedStatement.setString(4, apiId);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"Save OAS definition");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            throw new OASPersistenceException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
-    public String getOASDefinition(Organization organization, String s) throws OASPersistenceException {
-        return null;
+    public String getOASDefinition(Organization organization, String apiId) throws OASPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        String oasDefinition = null;
+        String getOASDefinitionQuery = "SELECT apiDefinition,mediaType from API_ARTIFACTS WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getOASDefinitionQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiId);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String mediaType = resultSet.getString("mediaType");
+                InputStream apiDefinitionBlob = resultSet.getBinaryStream("apiDefinition");
+                if (apiDefinitionBlob != null) {
+                    oasDefinition = PostgresDBConnectionUtil.getStringFromInputStream(apiDefinitionBlob);
+                }
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving oas definition for api uuid: " + apiId);
+            }
+            throw new OASPersistenceException("Error while retrieving oas definition for api uuid: " + apiId, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return oasDefinition;
     }
 
     @Override
@@ -451,7 +511,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String docUUID = UUID.nameUUIDFromBytes((documentation.getName() + apiUUID).getBytes()).toString();
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
 
             preparedStatement = connection.prepareStatement(addDocumentQuery);
@@ -494,7 +554,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String getDocumentQuery = "SELECT org, apiUUID, docUUID, docName, summary, docType, docSourceType, docSourceUrl, visibility from AM_API_DOCUMENT_METADATA WHERE org=? AND apiUUID=? AND docUUID=?;";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
             preparedStatement = connection.prepareStatement(getDocumentQuery);
             preparedStatement.setString(1, organization.getName());
@@ -570,7 +630,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String getDocumentContentQuery = "SELECT docSourceType, doc, docContent, docSourceUrl from AM_API_DOCUMENT_METADATA WHERE org=? AND apiUUID=? AND docUUID=?;";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
             preparedStatement = connection.prepareStatement(getDocumentContentQuery);
             preparedStatement.setString(1, organization.getName());
@@ -628,7 +688,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String addDocumentContentQuery = "UPDATE AM_API_DOCUMENT SET doc=?,docContent=to_tsvector(?) WHERE org=? AND apiUUID=? AND docUUID=?;";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
 
             preparedStatement = connection.prepareStatement(addDocumentContentQuery);
@@ -670,7 +730,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         String searchAllQuery = "SELECT * FROM AM_API_DOCUMENT_METADATA WHERE org=? and apiUUID=?;";
 
         try {
-            connection = PostgresDBConnectionUtil.getConnection();
+            connection = HikariCPDataSource.getConnection();
             connection.setAutoCommit(false);
             preparedStatement = connection.prepareStatement(searchAllQuery);
             preparedStatement.setString(1, org.getName());
