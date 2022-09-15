@@ -102,18 +102,86 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public String addAPIRevision(Organization organization, String s, int i) throws APIPersistenceException {
-        return null;
+    public String addAPIRevision(Organization organization, String apiUUID, int revisionId)
+            throws APIPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String addAPIRevisionQuery = "INSERT INTO API_ARTIFACTS (org, uuid, artefact, apiDefinition, mediaType, wsdlDefinition, wsdlMediaType, thumbnail, thumbnailMediaType, revisionId) SELECT org, ?, artefact, apiDefinition, mediaType, wsdlDefinition, wsdlMediaType, thumbnail, thumbnailMediaType, ? FROM API_ARTIFACTS WHERE org=? AND uuid=?;";
+        String revisionUUID = UUID.nameUUIDFromBytes((apiUUID+revisionId).getBytes()).toString();
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(addAPIRevisionQuery);
+            preparedStatement.setString(1, revisionUUID);
+            preparedStatement.setInt(2, revisionId);
+            preparedStatement.setString(3, organization.getName());
+            preparedStatement.setString(4, apiUUID);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"add api revision");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while adding entry to API_ARTIFACTS table ", e);
+            }
+            handleException("Error while persisting entry to API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
+        return revisionUUID;
     }
 
     @Override
-    public void restoreAPIRevision(Organization organization, String s, String s1, int i) throws APIPersistenceException {
-
+    public void restoreAPIRevision(Organization organization, String apiUUID, String revisionUUID, int revisionId)
+            throws APIPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String restoreAPIRevisionQuery = "UPDATE api_artifacts s SET (artefact, apiDefinition, mediaType, wsdlDefinition, wsdlMediaType, thumbnail, thumbnailMediaType) =\n" +
+                "    (SELECT artefact, apiDefinition, mediaType, wsdlDefinition, wsdlMediaType, thumbnail, thumbnailMediaType FROM api_artifacts d\n" +
+                "     WHERE d.uuid = ? and d.revisionId=?) WHERE org=? AND s.uuid=?";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(restoreAPIRevisionQuery);
+            preparedStatement.setString(1, revisionUUID);
+            preparedStatement.setInt(2, revisionId);
+            preparedStatement.setString(3, organization.getName());
+            preparedStatement.setString(4, apiUUID);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"restore api revision");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            handleException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
-    public void deleteAPIRevision(Organization organization, String s, String s1, int i) throws APIPersistenceException {
-
+    public void deleteAPIRevision(Organization organization, String apiUUID, String revisionUUID, int revisionId)
+            throws APIPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String deleteAPIRevisionQuery = "DELETE FROM api_artifacts WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(deleteAPIRevisionQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, revisionUUID);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"delete api revision");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while deleting entry from API_ARTIFACTS table ", e);
+            }
+            handleException("Error occurred while deleting entry from API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
@@ -232,7 +300,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
                                                            int offset, UserContext ctx, String sortBy, String sortOrder)
             throws APIPersistenceException {
         PublisherAPISearchResult result = null;
-        String searchAllQuery = "SELECT artefact,uuid FROM api_artifacts WHERE org=?;";
+        String searchAllQuery = "SELECT artefact,uuid FROM api_artifacts WHERE org=? AND revisionId IS NULL;";
 
         if (StringUtils.isEmpty(searchQuery)) {
             result = searchPaginatedPublisherAPIs(organization.getName(), searchAllQuery, start, offset);
@@ -315,7 +383,7 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         ResultSet resultSetDoc = null;
 
         String searchContentQuery = "SELECT DISTINCT artefact,uuid FROM api_artifacts JOIN jsonb_each_text(artefact) e ON true \n" +
-                " WHERE org=? AND e.value LIKE ?;";
+                " WHERE org=? AND revisionId IS NULL AND e.value LIKE ?;";
 
         String modifiedSearchQuery = "%" + searchQuery.substring(8) +"%";
 

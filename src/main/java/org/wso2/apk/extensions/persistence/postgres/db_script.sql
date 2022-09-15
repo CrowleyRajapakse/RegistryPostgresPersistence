@@ -8,7 +8,8 @@ CREATE TABLE API_ARTIFACTS (
 	wsdlDefinition bytea,
 	wsdlMediaType VARCHAR(100),
 	thumbnail bytea,
-	thumbnailMediaType VARCHAR(100)
+	thumbnailMediaType VARCHAR(100),
+	revisionId int
 );
 
 CREATE TABLE AM_API_DOCUMENT (
