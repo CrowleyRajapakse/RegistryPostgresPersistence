@@ -1057,18 +1057,99 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public void saveThumbnail(Organization organization, String s, ResourceFile resourceFile) throws ThumbnailPersistenceException {
-
+    public void saveThumbnail(Organization organization, String apiId, ResourceFile resourceFile) throws ThumbnailPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String saveThumbnailQuery = "UPDATE API_ARTIFACTS SET thumbnail=?,thumbnailMediaType=?, artefact[?] = to_jsonb(?) WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(saveThumbnailQuery);
+            if (resourceFile.getContent() != null) {
+                preparedStatement.setBinaryStream(1, resourceFile.getContent());
+                preparedStatement.setString(2, resourceFile.getContentType());
+                preparedStatement.setString(3, "thumbnail");
+                preparedStatement.setString(4, APIConstants.API_ICON_IMAGE + resourceFile.getContentType());
+            }
+            preparedStatement.setString(5, organization.getName());
+            preparedStatement.setString(6, apiId);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"Save API Thumbnail");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            throw new ThumbnailPersistenceException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
-    public ResourceFile getThumbnail(Organization organization, String s) throws ThumbnailPersistenceException {
-        return null;
+    public ResourceFile getThumbnail(Organization organization, String apiId) throws ThumbnailPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        ResourceFile returnResource = null;
+        String getThumbnailQuery = "SELECT thumbnail,thumbnailMediaType from API_ARTIFACTS WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getThumbnailQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiId);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String mediaType = resultSet.getString("thumbnailMediaType");
+                InputStream thumbnailBlob = resultSet.getBinaryStream("thumbnail");
+                if (thumbnailBlob != null) {
+                    byte[] artifactByte = PostgresDBConnectionUtil.getBytesFromInputStream(thumbnailBlob);
+                    try (InputStream newArtifact = new ByteArrayInputStream(artifactByte)) {
+                        returnResource = new ResourceFile(newArtifact, mediaType);
+                    } catch (IOException e) {
+                        throw new ThumbnailPersistenceException("Error occurred retrieving input stream from byte array.", e);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving Thumbnail for api uuid: " + apiId);
+            }
+            throw new ThumbnailPersistenceException("Error while retrieving Thumbnail for api uuid: " + apiId, e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return returnResource;
     }
 
     @Override
-    public void deleteThumbnail(Organization organization, String s) throws ThumbnailPersistenceException {
-
+    public void deleteThumbnail(Organization organization, String apiId) throws ThumbnailPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        String deleteThumbnailQuery = "UPDATE API_ARTIFACTS SET thumbnail=?,thumbnailMediaType=?, artefact[?] = to_jsonb(?) WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(deleteThumbnailQuery);
+            preparedStatement.setBinaryStream(1, null);
+            preparedStatement.setString(2, null);
+            preparedStatement.setString(3, "thumbnail");
+            preparedStatement.setString(4, null);
+            preparedStatement.setString(5, organization.getName());
+            preparedStatement.setString(6, apiId);
+            preparedStatement.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            PostgresDBConnectionUtil.rollbackConnection(connection,"Delete API Thumbnail");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while updating entry in API_ARTIFACTS table ", e);
+            }
+            throw new ThumbnailPersistenceException("Error while updating entry in API_ARTIFACTS table ", e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, null);
+        }
     }
 
     @Override
