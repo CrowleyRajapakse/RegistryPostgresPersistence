@@ -10,12 +10,12 @@ public class HikariCPDataSource {
     private static HikariDataSource ds;
 
     static {
-        config.setJdbcUrl( "jdbc:postgresql://localhost:5433/amdb" );
-        config.setUsername( "postgres" );
-        config.setPassword( "SUAJiPyiHsfV93EucjOa4qWwQP7Qb2KXLqDFxI8K8LUaNLvvI0xzaddx2iheRGB1" );
-//        config.setJdbcUrl( "jdbc:postgresql://localhost:5432/amdb2" );
-//        config.setUsername( "sampath" );
-//        config.setPassword( "sampath" );
+//        config.setJdbcUrl( "jdbc:postgresql://localhost:5433/amdb" );
+//        config.setUsername( "postgres" );
+//        config.setPassword( "SUAJiPyiHsfV93EucjOa4qWwQP7Qb2KXLqDFxI8K8LUaNLvvI0xzaddx2iheRGB1" );
+        config.setJdbcUrl( "jdbc:postgresql://localhost:5432/amdb4" );
+        config.setUsername( "sampath" );
+        config.setPassword( "sampath" );
         config.setMaximumPoolSize(50);
         config.setMinimumIdle(10);
         config.setMaxLifetime(60000);

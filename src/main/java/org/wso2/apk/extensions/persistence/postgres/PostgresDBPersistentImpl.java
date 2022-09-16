@@ -258,8 +258,42 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public DevPortalAPI getDevPortalAPI(Organization organization, String s) throws APIPersistenceException {
-        return null;
+    public DevPortalAPI getDevPortalAPI(Organization organization, String apiUUID) throws APIPersistenceException {
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        PublisherAPI api = null;
+        DevPortalAPI devPortalAPI = null;
+        String getAPIArtefactQuery = "SELECT artefact from API_ARTIFACTS WHERE org=? AND uuid=?;";
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(getAPIArtefactQuery);
+            preparedStatement.setString(1, organization.getName());
+            preparedStatement.setString(2, apiUUID);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            while (resultSet.next()) {
+                String json = resultSet.getString(1);
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode tree = mapper.readTree(json);
+                api = mapper.treeToValue(tree, PublisherAPI.class);
+                API apiObject = APIMapper.INSTANCE.toApi(api);
+                devPortalAPI = APIMapper.INSTANCE.toDevPortalApi(apiObject);
+            }
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving api artefact for API uuid: " + apiUUID);
+            }
+            handleException("Error while retrieving api artefact for API uuid: " + apiUUID, e);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return devPortalAPI;
     }
 
     @Override
@@ -367,8 +401,74 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public DevPortalAPISearchResult searchAPIsForDevPortal(Organization organization, String s, int i, int i1, UserContext userContext) throws APIPersistenceException {
-        return null;
+    public DevPortalAPISearchResult searchAPIsForDevPortal(Organization organization, String searchQuery,
+                                                           int start, int offset, UserContext userContext)
+            throws APIPersistenceException {
+        DevPortalAPISearchResult result = null;
+        String searchAllQuery = "SELECT artefact,uuid FROM api_artifacts WHERE org=? AND revisionId IS NULL AND artefact @> '{\"status\": \"PUBLISHED\"}';";
+        if (StringUtils.isEmpty(searchQuery)) {
+            result = searchPaginatedDevportalAPIs(organization.getName(), searchAllQuery, start, offset);
+        }
+        return result;
+    }
+
+
+    private DevPortalAPISearchResult searchPaginatedDevportalAPIs(String org, String searchQuery, int start,
+                                                                  int offset) throws APIPersistenceException {
+        int totalLength = 0;
+        DevPortalAPISearchResult searchResults = new DevPortalAPISearchResult();
+        PublisherAPI devPortalAPI;
+        Connection connection = null;
+        PreparedStatement preparedStatement = null;
+        ResultSet resultSet = null;
+        try {
+            connection = HikariCPDataSource.getConnection();
+            connection.setAutoCommit(false);
+            preparedStatement = connection.prepareStatement(searchQuery);
+            preparedStatement.setString(1, org);
+            resultSet = preparedStatement.executeQuery();
+            connection.commit();
+            List<DevPortalAPIInfo> devportalAPIInfoList = new ArrayList<>();
+            while (resultSet.next()) {
+                String json = resultSet.getString(1);
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode tree = mapper.readTree(json);
+                devPortalAPI = mapper.treeToValue(tree, PublisherAPI.class);
+                DevPortalAPIInfo apiInfo = new DevPortalAPIInfo();
+                apiInfo.setType(devPortalAPI.getType());
+                apiInfo.setId(resultSet.getString(2));
+                apiInfo.setApiName(devPortalAPI.getApiName());
+                apiInfo.setDescription(devPortalAPI.getDescription());
+                apiInfo.setContext(devPortalAPI.getContext());
+                apiInfo.setProviderName(devPortalAPI.getProviderName());
+                apiInfo.setStatus(devPortalAPI.getStatus());
+                apiInfo.setThumbnail(devPortalAPI.getThumbnail());
+                apiInfo.setVersion(devPortalAPI.getVersion());
+                apiInfo.setCreatedTime(devPortalAPI.getCreatedTime());
+                apiInfo.setBusinessOwner(devPortalAPI.getBusinessOwner());
+                apiInfo.setAvailableTierNames(devPortalAPI.getAvailableTierNames());
+                apiInfo.setSubscriptionAvailability(devPortalAPI.getSubscriptionAvailability());
+                apiInfo.setSubscriptionAvailableOrgs(devPortalAPI.getSubscriptionAvailableOrgs());
+                //apiInfo.setGatewayVendor(devPortalAPI.getAPIVendor());
+                devportalAPIInfoList.add(apiInfo);
+                totalLength ++;
+            }
+            searchResults.setDevPortalAPIInfoList(devportalAPIInfoList);
+            searchResults.setReturnedAPIsCount(devportalAPIInfoList.size());
+            searchResults.setTotalAPIsCount(totalLength);
+        } catch (SQLException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error while retrieving api artefacts");
+            }
+            handleException("Error while retrieving api artefacts", e);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            PostgresDBConnectionUtil.closeAllConnections(preparedStatement, connection, resultSet);
+        }
+        return searchResults;
     }
 
     @Override
@@ -1100,16 +1200,6 @@ public class PostgresDBPersistentImpl implements APIPersistence {
     }
 
     @Override
-    public Mediation addMediationPolicy(Organization organization, String s, Mediation mediation) throws MediationPolicyPersistenceException {
-        return null;
-    }
-
-    @Override
-    public Mediation updateMediationPolicy(Organization organization, String s, Mediation mediation) throws MediationPolicyPersistenceException {
-        return null;
-    }
-
-    @Override
     public Mediation getMediationPolicy(Organization organization, String s, String s1) throws MediationPolicyPersistenceException {
         return null;
     }
@@ -1119,10 +1209,6 @@ public class PostgresDBPersistentImpl implements APIPersistence {
         return null;
     }
 
-    @Override
-    public void deleteMediationPolicy(Organization organization, String s, String s1) throws MediationPolicyPersistenceException {
-
-    }
 
     @Override
     public void saveThumbnail(Organization organization, String apiId, ResourceFile resourceFile) throws ThumbnailPersistenceException {
